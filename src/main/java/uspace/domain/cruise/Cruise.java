@@ -1,0 +1,155 @@
+package uspace.domain.cruise;
+
+import jakarta.persistence.*;
+import org.hibernate.annotations.Fetch;
+import org.hibernate.annotations.FetchMode;
+import uspace.domain.cruise.booking.*;
+import uspace.domain.cruise.booking.traveler.TravelerId;
+import uspace.domain.cruise.booking.traveler.exceptions.TravelerNotFoundException;
+import uspace.domain.cruise.cabin.CabinAvailabilities;
+import uspace.domain.cruise.crew.Crew;
+import uspace.domain.cruise.crew.crewMember.CrewMember;
+import uspace.domain.cruise.dateTime.CruiseDateTime;
+import uspace.domain.cruise.hyperdrive.HyperdriveInventory;
+import uspace.domain.cruise.hyperdrive.module.maintenance.HyperdriveMaintenance;
+import uspace.domain.cruise.hyperdrive.module.maintenance.exceptions.EmployeeNotFoundException;
+import uspace.domain.cruise.hyperdrive.module.HyperdriveModule;
+import uspace.domain.cruise.hyperdrive.module.exceptions.InvalidHyperdriveModuleActivationDateException;
+import uspace.domain.cruise.hyperdrive.module.id.HyperdriveModuleId;
+import uspace.domain.cruise.oxygen.Oxygen;
+import uspace.domain.cruise.oxygen.OxygenCalculator;
+import uspace.domain.cruise.oxygen.OxygenCalculatorFactory;
+import uspace.domain.cruise.oxygen.exceptions.OxygenCalculationDateOutsideCruiseException;
+import uspace.domain.cruise.zeroGravityExperience.ZeroGravityExperience;
+import uspace.domain.cruise.zeroGravityExperience.exceptions.ZeroGravityExperienceBookingTimeException;
+
+import java.util.List;
+
+@Entity
+@Table(name = "Cruise")
+public class Cruise {
+	@Id
+	private CruiseId id;
+
+	@Embedded
+	@AttributeOverrides({@AttributeOverride(name = "localDateTime", column = @Column(name = "departureDateTime")),})
+	private CruiseDateTime departureDateTime;
+
+	@Embedded
+	@AttributeOverrides({@AttributeOverride(name = "localDateTime", column = @Column(name = "endDateTime")),})
+	private CruiseDateTime endDateTime;
+
+	@OneToOne(cascade = CascadeType.ALL)
+	@Fetch(FetchMode.SELECT)
+	private CabinAvailabilities cabinAvailabilities;
+
+	@OneToOne(cascade = CascadeType.ALL)
+	@Fetch(FetchMode.SELECT)
+	private CruiseBookings cruiseBookings;
+
+	@OneToOne(cascade = CascadeType.ALL)
+	@Fetch(FetchMode.SELECT)
+	private ZeroGravityExperience zeroGravityExperience;
+
+	@OneToOne(cascade = CascadeType.ALL)
+	@Fetch(FetchMode.SELECT)
+	private HyperdriveInventory hyperdriveInventory;
+
+	@OneToOne(cascade = CascadeType.ALL)
+	@Fetch(FetchMode.SELECT)
+	private Crew crew;
+
+	private OxygenCalculatorFactory oxygenCalculatorFactory;
+
+	public Cruise() {
+
+	}
+
+	public Cruise(CruiseId id, CruiseDateTime departureDateTime, CruiseDateTime endDateTime,
+			CabinAvailabilities cabinAvailabilities, CruiseBookings cruiseBookings,
+			ZeroGravityExperience zeroGravityExperience, HyperdriveInventory hyperdriveInventory, Crew crew,
+			OxygenCalculatorFactory oxygenCalculatorFactory) {
+		this.id = id;
+		this.departureDateTime = departureDateTime;
+		this.endDateTime = endDateTime;
+		this.cabinAvailabilities = cabinAvailabilities;
+		this.cruiseBookings = cruiseBookings;
+		this.zeroGravityExperience = zeroGravityExperience;
+		this.hyperdriveInventory = hyperdriveInventory;
+		this.crew = crew;
+		this.oxygenCalculatorFactory = oxygenCalculatorFactory;
+	}
+
+	public CruiseId getId() {
+		return id;
+	}
+
+	public CruiseDateTime getDepartureDateTime() {
+		return departureDateTime;
+	}
+
+	public CruiseDateTime getEndDateTime() {
+		return endDateTime;
+	}
+
+	public List<HyperdriveModule> getHyperdriveModules() {
+		return hyperdriveInventory.getAllHyperdriveModules();
+	}
+
+	public void processBooking(Booking booking) {
+		booking.validate(departureDateTime);
+		cabinAvailabilities.bookCabin(booking.getCabinType());
+		cruiseBookings.add(booking);
+	}
+
+	public Booking findBookingById(BookingId bookingId) {
+		return cruiseBookings.findById(bookingId);
+	}
+
+	public void bookZeroGravityExperience(BookingId bookingId, TravelerId travelerId,
+			CruiseDateTime experienceBookingDateTime) {
+		if (experienceBookingDateTime.isAfter(departureDateTime)) {
+			throw new ZeroGravityExperienceBookingTimeException();
+		}
+
+		Booking booking = cruiseBookings.findById(bookingId);
+		if (booking == null) {
+			throw new TravelerNotFoundException();
+		}
+
+		booking.bookZeroGravityExperience(travelerId, zeroGravityExperience);
+	}
+
+	public void addHyperdriveModule(HyperdriveModule hyperdriveModule) {
+		if (!hyperdriveModule.isActivationBetween(departureDateTime, endDateTime)) {
+			throw new InvalidHyperdriveModuleActivationDateException();
+		}
+
+		hyperdriveInventory.addHyperdriveModule(hyperdriveModule);
+	}
+
+	public void addCrewMember(CrewMember newCrewMember) {
+		crew.addCrewMember(newCrewMember, cabinAvailabilities);
+	}
+
+	public List<CrewMember> getCrewMembers() {
+		return crew.getAllCrewMembers();
+	}
+
+	public void addHyperdriveMaintenance(HyperdriveModuleId moduleId, HyperdriveMaintenance maintenance) {
+		if (!maintenance.hasValidEmployees(crew)) {
+			throw new EmployeeNotFoundException();
+		}
+		hyperdriveInventory.addMaintenance(moduleId, maintenance);
+	}
+
+	public Oxygen calculateRequiredOxygen(CruiseDateTime calculationCruiseDateTime) {
+		if (!calculationCruiseDateTime.isBetween(departureDateTime, endDateTime)) {
+			throw new OxygenCalculationDateOutsideCruiseException();
+		}
+
+		OxygenCalculator oxygenCalculator = oxygenCalculatorFactory.create(calculationCruiseDateTime, departureDateTime,
+				endDateTime);
+		return oxygenCalculator.calculateRequiredOxygen(cruiseBookings, crew);
+	}
+}
